@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Buscar e Substituir Texto</title>
+    <!-- Carregamento do Tailwind CSS para estilo -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Configuração de Fonte Padrão e Estilo de Corpo */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3ff6;
+        }
+        /* Estilização para o destaque do texto */
+        .highlight {
+            background-color: #fcd34d; /* Cor amarela/âmbar para destaque */
+            border-radius: 4px;
+            padding: 1px 0;
+            cursor: pointer; /* Indica que é clicável/navegável */
+        }
+        /* Estilização da área de texto principal */
+        .text-area-container {
+            position: relative;
+            height: 60vh; /* Altura generosa para edição/visualização */
+        }
+        .main-textarea, .display-div {
+            width: 100%;
+            height: 100%;
+            padding: 1rem;
+            border: 2px solid #d1d5db;
+            border-radius: 0.5rem;
+            resize: none;
+            line-height: 1.5;
+            box-sizing: border-box;
+            font-size: 1rem;
+            font-family: monospace; /* Fonte monoespaçada para código */
+        }
+        /* O div de visualização deve parecer um textarea, mas com a capacidade de renderizar HTML */
+        .display-div {
+            white-space: pre-wrap; /* Preserva quebras de linha e espaços como em um textarea */
+            overflow-y: auto;
+            background-color: white;
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+        /* Esconde a barra de rolagem mas permite a rolagem */
+        .display-div::-webkit-scrollbar {
+            display: none;
+        }
+        .display-div {
+            -ms-overflow-style: none;  /* IE and Edge */
+            scrollbar-width: none;  /* Firefox */
+        }
+    </style>
+    <!-- Importações do Firebase -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        let firebaseConfig;
+        try {
+            firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        } catch (e) {
+            console.error("Erro ao analisar a configuração do Firebase:", e);
+            firebaseConfig = {};
+        }
+
+        if (Object.keys(firebaseConfig).length > 0) {
+            const app = initializeApp(firebaseConfig);
+            window.db = getFirestore(app);
+            const auth = getAuth(app);
+            
+            // Autenticação com token personalizado ou anônima (Obrigatório)
+            const signIn = async () => {
+                try {
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        await signInWithCustomToken(auth, __initial_auth_token);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+                    // O userId será usado para fins de conformidade, embora não seja necessário para a lógica do app
+                    window.userId = auth.currentUser?.uid || crypto.randomUUID();
+                    document.getElementById('user-id-display').innerText = `ID do Usuário: ${window.userId}`;
+                } catch (error) {
+                    console.error("Erro na autenticação do Firebase:", error);
+                    window.userId = crypto.randomUUID();
+                    document.getElementById('user-id-display').innerText = `ID do Usuário: (Anônimo) ${window.userId}`;
+                }
+            };
+            signIn();
+        } else {
+            console.warn("Configuração do Firebase ausente. O app funcionará localmente, mas a autenticação e o DB não estarão disponíveis.");
+            window.userId = crypto.randomUUID();
+            document.getElementById('user-id-display').innerText = `ID do Usuário: (Sem Firebase) ${window.userId}`;
+        }
+    </script>
+</head>
+<body class="p-4 md:p-8">
+
+    <div class="max-w-4xl mx-auto bg-white shadow-xl rounded-xl p-4 md:p-6">
+        <h1 class="text-3xl font-extrabold text-gray-800 mb-2">Busca Avançada de Texto</h1>
+        <p class="text-sm text-gray-500 mb-4" id="user-id-display">ID do Usuário: Carregando...</p>
+
+        <!-- Controles Desfazer/Refazer -->
+        <div class="flex space-x-2 mb-4">
+            <button id="undo-button" onclick="undo()" class="bg-gray-300 hover:bg-gray-400 text-gray-800 font-semibold py-2 px-3 rounded-lg shadow-sm transition duration-150 ease-in-out disabled:opacity-50" disabled>
+                Desfazer
+            </button>
+            <button id="redo-button" onclick="redo()" class="bg-gray-300 hover:bg-gray-400 text-gray-800 font-semibold py-2 px-3 rounded-lg shadow-sm transition duration-150 ease-in-out disabled:opacity-50" disabled>
+                Refazer
+            </button>
+        </div>
+
+        <!-- Painel de Controle de Busca -->
+        <div class="bg-gray-100 p-4 rounded-lg mb-4 space-y-3">
+            <div class="flex flex-col md:flex-row gap-3">
+                <input type="text" id="search-term" placeholder="Palavra ou frase para buscar..." class="flex-grow p-2 border border-gray-300 rounded-lg focus:ring-amber-500 focus:border-amber-500" />
+                <button id="find-button" onclick="findAndHighlight(false)" class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-150 ease-in-out whitespace-nowrap">
+                    Buscar
+                </button>
+            </div>
+
+            <!-- Opções Avançadas -->
+            <div class="grid grid-cols-2 md:grid-cols-3 gap-2 text-sm">
+                <label class="flex items-center space-x-2 bg-white p-2 rounded-lg shadow-sm border border-gray-200 cursor-pointer hover:bg-gray-50 transition">
+                    <input type="checkbox" id="case-sensitive" class="rounded text-indigo-600 focus:ring-indigo-500" checked>
+                    <span>Maiúsculas/minúsculas</span>
+                </label>
+                <label class="flex items-center space-x-2 bg-white p-2 rounded-lg shadow-sm border border-gray-200 cursor-pointer hover:bg-gray-50 transition">
+                    <input type="checkbox" id="whole-word" class="rounded text-indigo-600 focus:ring-indigo-500">
+                    <span>Palavra inteira</span>
+                </label>
+                <label class="flex items-center space-x-2 bg-white p-2 rounded-lg shadow-sm border border-gray-200 cursor-pointer hover:bg-gray-50 transition">
+                    <input type="checkbox" id="diacritic-sensitive" class="rounded text-indigo-600 focus:ring-indigo-500" checked>
+                    <span>Diacríticos correspondentes</span>
+                </label>
+            </div>
+
+            <!-- Substituição e Remoção -->
+            <div class="flex flex-col gap-3 pt-3 border-t border-gray-200">
+                <input type="text" id="replace-term" placeholder="Novo texto para substituição..." class="p-2 border border-gray-300 rounded-lg focus:ring-green-500 focus:border-green-500" />
+                <div class="flex gap-3">
+                    <button id="replace-button" onclick="findAndHighlight(true)" class="flex-1 bg-green-600 hover:bg-green-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-150 ease-in-out whitespace-nowrap disabled:opacity-50" disabled>
+                        Substituir Tudo
+                    </button>
+                    <!-- NOVO BOTÃO DE REMOÇÃO -->
+                    <button id="remove-button" onclick="removeAll()" class="flex-1 bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-150 ease-in-out whitespace-nowrap disabled:opacity-50" disabled>
+                        Remover Tudo
+                    </button>
+                </div>
+            </div>
+            
+            <div id="message-box" class="text-sm p-2 rounded-lg hidden"></div>
+        </div>
+
+        <!-- Área de Edição e Visualização -->
+        <div class="text-area-container">
+            <!-- Textarea onde o usuário digita/edita -->
+            <textarea id="main-textarea" class="main-textarea shadow-inner focus:outline-none focus:ring-2 focus:ring-indigo-500 transition" placeholder="Cole ou digite seu texto aqui. Ao buscar, o destaque aparecerá no modo de visualização.">Cole seu código HTML aqui ou outro texto. Ex: <html><body><h1>Hello</h1></body></html></textarea>
+            
+            <!-- Div de Visualização onde o destaque e a rolagem acontecem -->
+            <div id="display-div" class="display-div hidden shadow-inner bg-white text-gray-900 border-2 border-indigo-300"></div>
+        </div>
+
+        <!-- Navegação entre resultados -->
+        <div id="nav-controls" class="flex justify-center space-x-4 mt-4 hidden">
+            <button onclick="navigateResult(-1)" class="bg-gray-300 hover:bg-gray-400 text-gray-800 font-bold py-2 px-4 rounded-full transition duration-150">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 inline-block" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M12.707 5.293a1 1 0 010 1.414L9.414 10l3.293 3.293a1 1 0 01-1.414 1.414l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 0z" clip-rule="evenodd" /></svg>
+                Anterior
+            </button>
+            <span id="result-counter" class="text-lg font-semibold flex items-center"></span>
+            <button onclick="navigateResult(1)" class="bg-gray-300 hover:bg-gray-400 text-gray-800 font-bold py-2 px-4 rounded-full transition duration-150">
+                Próximo
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 inline-block" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd" /></svg>
+            </button>
+        </div>
+
+    </div>
+
+    <script>
+        // Referências aos elementos DOM
+        const textArea = document.getElementById('main-textarea');
+        const displayDiv = document.getElementById('display-div');
+        const searchInput = document.getElementById('search-term');
+        const replaceInput = document.getElementById('replace-term');
+        const caseSensitive = document.getElementById('case-sensitive');
+        const wholeWord = document.getElementById('whole-word');
+        const diacriticSensitive = document.getElementById('diacritic-sensitive');
+        const replaceButton = document.getElementById('replace-button');
+        const removeButton = document.getElementById('remove-button');
+        const navControls = document.getElementById('nav-controls');
+        const resultCounter = document.getElementById('result-counter');
+        const messageBox = document.getElementById('message-box');
+
+        // Referências dos botões Desfazer/Refazer
+        const undoButton = document.getElementById('undo-button');
+        const redoButton = document.getElementById('redo-button');
+
+
+        // --- FUNÇÃO DE ESCAPE DE HTML ---
+        /**
+         * Converte caracteres HTML especiais (<, >, &, ", ') para suas entidades HTML.
+         * Isso garante que o código HTML seja exibido como texto puro no displayDiv, 
+         * em vez de ser renderizado pelo navegador.
+         * @param {string} unsafe - A string contendo HTML ou caracteres especiais.
+         * @returns {string} - A string com caracteres escapados.
+         */
+        function escapeHtml(unsafe) {
+            if (!unsafe) return '';
+            return unsafe.replace(/[&]/g, "&amp;")
+                        .replace(/</g, "&lt;")
+                        .replace(/>/g, "&gt;")
+                        .replace(/"/g, "&quot;")
+                        .replace(/'/g, "&#039;");
+        }
+
+
+        // --- LÓGICA DE HISTÓRICO (DESFAZER/REFAZER) ---
+        let history = [];
+        let historyIndex = -1;
+        let isRestoringState = false; // Flag para evitar que undo/redo grave no histórico
+
+        /**
+         * Atualiza o estado de disabled dos botões Desfazer e Refazer.
+         */
+        function updateUndoRedoButtons() {
+            undoButton.disabled = historyIndex <= 0;
+            redoButton.disabled = historyIndex >= history.length - 1;
+        }
+
+        /**
+         * Registra o estado atual do texto no histórico.
+         */
+        function recordState() {
+            if (isRestoringState) return;
+
+            const currentState = textArea.value;
+            
+            // Não registra se o estado for idêntico ao último (ignora movimentos de cursor, etc.)
+            if (history.length > 0 && history[history.length - 1] === currentState) {
+                return;
+            }
+
+            // Se fizemos uma mudança após um "Desfazer", truncamos o histórico de "Refazer"
+            if (historyIndex < history.length - 1) {
+                history.splice(historyIndex + 1);
+            }
+            
+            // Adiciona o novo estado
+            history.push(currentState);
+            historyIndex++;
+
+            // Limita o histórico a 50 estados para evitar sobrecarga de memória
+            const MAX_HISTORY_SIZE = 50;
+            if (history.length > MAX_HISTORY_SIZE) {
+                history.shift(); // Remove o estado mais antigo
+                historyIndex--; // Ajusta o índice
+            }
+            
+            updateUndoRedoButtons();
+        }
+
+        /**
+         * Restaura um estado específico do histórico.
+         * @param {number} index - O índice do estado a ser restaurado.
+         */
+        function restoreState(index) {
+            if (index < 0 || index >= history.length) return;
+            
+            isRestoringState = true;
+            
+            // Limpa o estado de destaque atual
+            currentResultIndex = -1;
+            results = [];
+            navControls.classList.add('hidden');
+            
+            // Carrega o estado
+            textArea.value = history[index];
+            historyIndex = index;
+            
+            // Garante que o modo de edição esteja ativo após a restauração
+            switchToEditMode();
+            
+            updateResultCounter();
+            
+            isRestoringState = false;
+            updateUndoRedoButtons();
+        }
+
+        /**
+         * Executa a operação Desfazer.
+         */
+        function undo() {
+            restoreState(historyIndex - 1);
+            showMessage("Desfeito.", 'info'); 
+        }
+
+        /**
+         * Executa a operação Refazer.
+         */
+        function redo() {
+            restoreState(historyIndex + 1);
+            showMessage("Refeito.", 'info');
+        }
+        // --- FIM DA LÓGICA DE HISTÓRICO ---
+
+
+        // Estado da busca
+        let results = [];
+        let currentResultIndex = -1;
+
+        /**
+         * Exibe uma mensagem de feedback na tela.
+         * @param {string} message - A mensagem a ser exibida.
+         * @param {string} type - O tipo de mensagem ('success', 'error', ou 'info').
+         */
+        function showMessage(message, type = 'success') {
+            messageBox.innerText = message;
+            messageBox.classList.remove('hidden', 'bg-red-200', 'text-red-800', 'bg-green-200', 'text-green-800', 'bg-indigo-200', 'text-indigo-800');
+            
+            if (type === 'error') {
+                messageBox.classList.add('bg-red-200', 'text-red-800');
+            } else if (type === 'info') {
+                messageBox.classList.add('bg-indigo-200', 'text-indigo-800');
+            } else {
+                messageBox.classList.add('bg-green-200', 'text-green-800');
+            }
+            
+            setTimeout(() => {
+                messageBox.classList.add('hidden');
+            }, 5000);
+        }
+
+        /**
+         * Normaliza uma string removendo acentos para busca insensível a diacríticos.
+         * @param {string} str - A string a ser normalizada.
+         * @returns {string} - A string sem diacríticos.
+         */
+        function stripDiacritics(str) {
+            // Normaliza para NFD (Forma de Decomposição de Normalização)
+            // e remove caracteres de combinação (diacríticos)
+            return str.normalize('NFD').replace(/[\u0300-\u036f]/g, "");
+        }
+
+        /**
+         * Altera o modo para edição, mostrando o textarea e escondendo o div de visualização.
+         */
+        function switchToEditMode() {
+            // Se já estiver no modo de edição, apenas retorna
+            if (!textArea.classList.contains('hidden')) return;
+
+            textArea.classList.remove('hidden');
+            displayDiv.classList.add('hidden');
+            navControls.classList.add('hidden');
+            
+            // Desabilita botões de ação (Substituir/Remover) até que uma nova busca seja feita
+            replaceButton.disabled = (replaceInput.value.trim() === "");
+            removeButton.disabled = true; 
+            
+            results = [];
+            currentResultIndex = -1;
+            updateResultCounter();
+            
+            // Coloca o foco na área de texto editável
+            textArea.focus();
+        }
+
+        /**
+         * Remove todas as ocorrências do termo de busca.
+         */
+        function removeAll() {
+            const searchTerm = searchInput.value;
+            if (!searchTerm) {
+                showMessage("Por favor, insira um termo de busca para remover.", 'error');
+                return;
+            }
+
+            // Armazena o valor de substituição original (caso o usuário tenha digitado algo)
+            const originalReplaceTerm = replaceInput.value;
+            
+            // Define o valor de substituição como vazio para efetuar a remoção
+            replaceInput.value = '';
+
+            // Chama a função de substituição principal (findAndHighlight(true))
+            findAndHighlight(true);
+            
+            // Restaura o valor de substituição
+            replaceInput.value = originalReplaceTerm;
+            
+            // A função de substituição já chama showMessage e recordState, mas personalizamos aqui para a remoção
+            showMessage(`Todas as ocorrências de "${searchTerm}" foram removidas!`, 'success');
+
+            // Após a remoção, o botão de substituição deve ser reavaliado
+            replaceButton.disabled = (replaceInput.value.trim() === "");
+        }
+
+        /**
+         * Cria e executa a RegEx de busca com base nas opções selecionadas.
+         * @param {boolean} forReplace - Se a função está sendo chamada para substituir.
+         */
+        function findAndHighlight(forReplace) {
+            const searchTerm = searchInput.value;
+            const replaceTerm = replaceInput.value;
+            
+            if (!searchTerm) {
+                showMessage("Por favor, insira um termo de busca.", 'error');
+                switchToEditMode(); // Volta para o modo de edição se a busca for vazia
+                return;
+            }
+
+            // 1. Alterna para o modo de visualização
+            textArea.classList.add('hidden');
+            displayDiv.classList.remove('hidden');
+
+            const content = textArea.value;
+            let sourceText = content; // Texto original ou insensível a diacríticos (para busca)
+            let pattern = searchTerm;
+            let flags = 'g'; // Busca global
+
+            // --- 2. Aplica as Opções de Busca ---
+
+            if (!caseSensitive.checked) {
+                flags += 'i';
+            }
+
+            let isDiacriticSensitive = diacriticSensitive.checked;
+            
+            if (!isDiacriticSensitive) {
+                sourceText = stripDiacritics(content);
+                pattern = stripDiacritics(searchTerm);
+            }
+
+            // Para garantir que os metacaracteres de regex sejam escapados se o termo for literal.
+            const escapedPattern = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            
+            let finalPattern = escapedPattern;
+            if (wholeWord.checked) {
+                finalPattern = `\\b${escapedPattern}\\b`;
+            }
+
+            const regex = new RegExp(finalPattern, flags);
+
+            // --- 3. Execução da Substituição (Se forReplace for true) ---
+            if (forReplace) {
+                if (replaceTerm === null) {
+                    showMessage("O termo de substituição não pode ser nulo.", 'error');
+                    return;
+                }
+
+                const originalContent = content; 
+
+                // A substituição deve ocorrer no texto bruto (textArea.value)
+                if (!isDiacriticSensitive) {
+                    // Lógica de substituição complexa para insensibilidade a diacríticos
+                    let match;
+                    let lastIndex = 0;
+                    let newContent = '';
+
+                    while ((match = regex.exec(sourceText)) !== null) {
+                        const originalMatchLength = match[0].length;
+                        
+                        // Parte antes do match (do texto original)
+                        newContent += originalContent.substring(lastIndex, match.index);
+                        newContent += replaceTerm;
+
+                        lastIndex = match.index + originalMatchLength;
+                    }
+                    
+                    newContent += originalContent.substring(lastIndex);
+                    
+                    textArea.value = newContent;
+
+                } else {
+                    // Substituição direta com RegEx para Diacritic-Sensitive
+                    textArea.value = originalContent.replaceAll(regex, replaceTerm);
+                }
+
+                // *** REGISTRA O NOVO ESTADO APÓS A SUBSTITUIÇÃO ***
+                recordState();
+
+                // Após a substituição, atualiza o display
+                findAndHighlight(false); 
+                
+                return;
+            }
+
+            // --- 4. Execução da Busca e Destaque ---
+
+            results = []; // Zera os resultados
+            let highlightedHtml = '';
+            let lastIndex = 0; // O índice rastreia o texto BRUTO/ORIGINAL
+
+            const textToMatch = isDiacriticSensitive ? content : sourceText;
+            const matches = [...textToMatch.matchAll(regex)];
+            
+            // Loop sobre as correspondências encontradas
+            matches.forEach(match => {
+                const matchIndex = match.index;
+                const matchLength = match[0].length;
+                
+                // 1. Parte NÃO correspondente (Texto BRUTO, precisa de ESCAPE)
+                const precedingRawText = content.substring(lastIndex, matchIndex);
+                highlightedHtml += escapeHtml(precedingRawText);
+
+                // 2. Parte correspondente (Texto BRUTO, precisa de ESCAPE E DESTAQUE)
+                const matchedRawText = content.substring(matchIndex, matchIndex + matchLength);
+                const escapedMatchedText = escapeHtml(matchedRawText);
+                
+                // Adiciona o Span de Destaque
+                highlightedHtml += `<span class="highlight" data-index="${results.length}">${escapedMatchedText}</span>`;
+                
+                results.push(matchIndex); // Armazena o índice (no texto original)
+                lastIndex = matchIndex + matchLength; // Move o índice para o fim do match
+            });
+            
+            // 3. Parte restante (Texto BRUTO, precisa de ESCAPE)
+            const remainingRawText = content.substring(lastIndex);
+            highlightedHtml += escapeHtml(remainingRawText);
+
+            displayDiv.innerHTML = highlightedHtml; // Define o HTML escapado e destacado
+            
+            // --- 5. Finalização e Navegação ---
+
+            // Re-obtém as referências dos spans (eles foram criados no innerHTML)
+            results = Array.from(displayDiv.querySelectorAll('.highlight'));
+
+
+            if (results.length > 0) {
+                // Habilita os botões de ação se houver resultados
+                replaceButton.disabled = (replaceInput.value.trim() === ""); 
+                removeButton.disabled = false;
+
+                navControls.classList.remove('hidden');
+                currentResultIndex = 0;
+                scrollToResult(currentResultIndex);
+                showMessage(`Encontrado ${results.length} resultado(s).`);
+            } else {
+                replaceButton.disabled = true;
+                removeButton.disabled = true;
+                navControls.classList.add('hidden');
+                currentResultIndex = -1;
+                
+                // Exibe o texto escapado, mas sem destaques
+                displayDiv.innerHTML = escapeHtml(content); 
+                showMessage("Nenhuma correspondência encontrada.", 'error');
+            }
+            
+            updateResultCounter();
+        }
+
+        /**
+         * Rola o displayDiv até o elemento de destaque atual e o realça.
+         * @param {number} index - O índice do resultado para o qual rolar.
+         */
+        function scrollToResult(index) {
+            if (results.length === 0) return;
+
+            // Remove a classe de foco/ativo de todos os resultados
+            results.forEach(el => el.classList.remove('ring-4', 'ring-indigo-400', 'ring-offset-2', 'bg-red-400'));
+            
+            const activeResult = results[index];
+            
+            if (activeResult) {
+                activeResult.classList.add('ring-4', 'ring-indigo-400', 'ring-offset-2', 'bg-red-400');
+                activeResult.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+        }
+
+        /**
+         * Navega para o resultado anterior ou próximo.
+         * @param {number} direction - -1 para anterior, 1 para próximo.
+         */
+        function navigateResult(direction) {
+            if (results.length === 0) return;
+
+            currentResultIndex += direction;
+            
+            // Loop na lista de resultados
+            if (currentResultIndex < 0) {
+                currentResultIndex = results.length - 1;
+            } else if (currentResultIndex >= results.length) {
+                currentResultIndex = 0;
+            }
+
+            scrollToResult(currentResultIndex);
+            updateResultCounter();
+        }
+
+        /**
+         * Atualiza o contador de resultados exibido.
+         */
+        function updateResultCounter() {
+            if (currentResultIndex !== -1) {
+                resultCounter.innerText = `${currentResultIndex + 1} de ${results.length}`;
+            } else {
+                resultCounter.innerText = '';
+            }
+        }
+
+        /**
+         * Monitora o campo de substituição para habilitar/desabilitar o botão de substituição.
+         */
+        replaceInput.addEventListener('input', () => {
+            const hasReplaceTerm = replaceInput.value.trim() !== '';
+            replaceButton.disabled = !hasReplaceTerm;
+            // O removeButton é habilitado apenas após uma busca bem-sucedida.
+        });
+        
+        // OUVINTE: Permite que o usuário clique na área de visualização para voltar ao modo de edição
+        displayDiv.addEventListener('click', switchToEditMode);
+
+
+        /**
+         * Limpa o modo de destaque/visualização e registra o estado ao editar.
+         */
+        textArea.addEventListener('input', () => {
+            // Se estiver restaurando (undo/redo), não faça nada
+            if (isRestoringState) return;
+
+            // Se o usuário digita, garante que está no modo de edição (já deve estar se ele está digitando)
+            switchToEditMode();
+            
+            // REGISTRA O NOVO ESTADO
+            recordState(); 
+        });
+        
+        // Inicialização: Registra o estado inicial e desabilita botões de histórico
+        (function init() {
+            recordState();
+            updateResultCounter();
+            updateUndoRedoButtons();
+        })();
+
+    </script>
+</body>
+</html>
